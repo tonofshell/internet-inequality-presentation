@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css?family=News+Cycle:400,700|Pragati+Narrow:400,700Roboto+Condensed:300');
+
+h1{
+  font-family: 'News Cycle', sans-serif;
+  background: linear-gradient(to right, #EB5028, #9146F0, #0FA0F5 80%);
+  -webkit-background-clip: text;
+	-webkit-text-fill-color: transparent;
+}
+
+h2,h3,h4,h5,h6{
+  font-family: "Pragati Narrow", sans-serif;
+  letter-spacing: normal;
+}
+
+p{
+ font-family: 'Roboto Condensed', sans-serif; 
+ font-size: 13pt;
+}
+
+hgroup {
+  padding: 40px 60px;
+  padding-bottom: 0;
+}
+
+slides > slide {
+  padding: 0;
+}
+
+slides > slide > hgroup + article {
+  margin: 25px;
+}
+

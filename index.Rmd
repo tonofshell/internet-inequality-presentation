@@ -1,0 +1,277 @@
+---
+title: "Internet Access and Inequality"
+author: "Adam Shelton"
+date: "4/12/2019"
+output: 
+  ioslides_presentation:
+    css: style.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(here)
+library(ggmap)
+library(maps)
+library(mapdata)
+library(stringr)
+library(scales)
+library(ggnewscale)
+library(colorspace)
+library(multiscales)
+library(sf)
+library(hexbin)
+library(RColorBrewer)
+library(reshape2)
+library(readxl)
+library(treemapify)
+
+source("../../theme.R")
+
+windows.options(antialias = "cleartype")
+# options(device = Cairo::CairoSVG)
+
+knitr::opts_chunk$set(fig.width=10, fig.height=6) 
+# knitr::opts_chunk$set(fig.width=10, fig.height=7, dev = "svg") 
+```
+
+```{r import-acs17-data, message=FALSE, warning=FALSE, include=FALSE}
+states_sf = read_sf(here("Datasets", "States_Shapefile", "cb_2017_us_state_20m.shx")) %>% filter(as.numeric(STATEFP) %in% c(1:56)[-c(2,15)])
+
+us_sf = read_sf(here("Datasets", "US_Shapefile", "tl_2018_us_county.shx")) %>% filter(as.numeric(STATEFP) %in% c(1:56)[-c(2,15)])
+# Oglala Lakota County, SD was Shannon County before 2015, which needs to be corrected, as apparently this area database ("LND01.xls") has not been updated since the name change
+land_area = read_excel(here("Datasets", "LND01.xls")) %>% select(STCOU, LND110210D)
+land_area[land_area$STCOU == 46113,]$STCOU = 46102
+acs_17 = land_area %>% rename(GEOID = STCOU, land_area = LND110210D) %>% right_join(readRDS(here("Datasets", "acs_17_vals.rds"))) %>% inner_join(as_tibble(us_sf)[,c(4,16,17)], by = "GEOID")
+
+acs_17_mod = acs_17[1:length(acs_17[[1]]) ,c(1,3,21,22,23,31,34,35,36)] %>%
+  bind_cols(data.frame(pop_dens = (acs_17$total_pop / acs_17[,2]))) %>%
+  bind_cols(as_tibble(acs_17[, -c(1,2,3,21,22,23,31,34,35,36)] / acs_17$total_pop)) %>%
+  rename("pop_dens" = land_area, "avg_fam_inc" = aggr_fam_inc) %>%
+  separate(NAME, c("county", "state"), sep = ", ")
+
+acs_17_mod$INTPTLON = -as.numeric(substr(acs_17_mod$INTPTLON, start = 2, stop = 11))
+acs_17_mod$INTPTLAT = as.numeric(substr(acs_17_mod$INTPTLAT, start = 2, stop = 11))
+acs_17_mod = acs_17_mod[-8] %>% st_as_sf(coords = c("INTPTLON", "INTPTLAT"), crs = 4326)
+
+transformed_points = acs_17_mod$geometry %>% st_transform(crs = 102003)
+acs_17_mod = cbind(acs_17_mod, st_coordinates(transformed_points))
+
+acs_17_mod = acs_17_mod[rev(order(acs_17_mod$pop_dens)),]
+
+state_regions = bind_rows(filter(state.fips, !str_detect(polyname, ":")), 
+                          filter(state.fips, str_detect(polyname, ":main")))[4:5] %>% 
+  bind_rows(tibble(division = c(9, 9), abb = c("AK", "HI")))
+state_regions$division = state_regions$division  %>% factor()
+levels(state_regions$division) = list(Northeast = c(1,2), Midwest = c(3, 4), South = c(5, 6, 7), West = c(8, 9))
+
+acs_17_mod = merge(acs_17_mod, tibble(region = state_regions$division, state_ab = state_regions$abb))
+```
+
+```{r ubs-setup, include=FALSE, cache=TRUE}
+urban_bb = read_csv2(here("Datasets", "US_Urban_Rate_Broadband_Survey.csv"))
+urban_bb$`Total Charge` = round(as.numeric(urban_bb$`Total Charge`))
+urban_bb$`Download Bandwidth Mbps` = round(as.numeric(urban_bb$`Download Bandwidth Mbps`))
+urban_bb$isp_size = -log(as.numeric(urban_bb$Weight))
+urban_bb$isp_size = (urban_bb$isp_size - min(urban_bb$isp_size) + 1)^3
+
+
+perc_not_bb = sum(urban_bb$`Download Bandwidth Mbps` < 25) / length(urban_bb$`Download Bandwidth Mbps`) * 100
+
+urban_bb$Provider = recode(urban_bb$Provider,
+                           `Charter Communications, Inc.` = "Charter", 
+                             `Charter Communications` = "Charter", 
+                             `COMCAST CABLE COMMUNICATIONS, INC.` = "Comcast",
+                             `COMCAST CABLE COMMUNICATIONS, LLC` = "Comcast",
+                             `Cox Communications` = "Cox",
+                             `Cox Communications, Inc` = "Cox",
+                             `DigitalPath, Inc` = "DigitalPath",
+                             `DigitalPath, Inc.` = "DigitalPath",
+                             `Frontier Communications` = "Frontier",
+                             `Frontier Communications Corporation` = "Frontier",
+                             `Giggle Fiber LLC` = "Google Fiber",
+                             `Google Fiber Kansas, LLC` = "Google Fiber",
+                             `Google Fiber Missouri, LLC` = "Google Fiber",
+                             `Google Fiber Texas, LLC` = "Google Fiber",
+                             `Google Fiber Utah, LLC` = "Google Fiber",
+                             `Knology of Alabama, Inc.` = "Knology",
+                             `Knology of Florida, Inc.` = "Knology",
+                             `Liberty Cablevision of Puerto Rico LLC` = "Liberty Cablevision",
+                             `Liberty Cablevision of Puerto Rico, LLC` = "Liberty Cablevision",
+                             `Mediacom Arizona LLC` = "Mediacom",
+                             `Mediacom California LLC` = "Mediacom",
+                             `Mediacom Delaware LLC` = "Mediacom",
+                             `Mediacom Illinois LLC` = "Mediacom",
+                             `Mediacom Indiana LLC` = "Mediacom",
+                             `Mediacom Iowa LLC` = "Mediacom",
+                             `Mediacom Minnesota LLC` = "Mediacom",
+                             `Mediacom Southeast LLC` = "Mediacom",
+                             `Orlando Telephone Company, Inc.` = "Orlando Telephone Company",
+                             `RCN Telecom Services (Lehigh) LLC` = "RCN",
+                             `RCN Telecom Services of Illinois, LLC` = "RCN",
+                             `RCN Telecom Services of New York, LP` = "RCN",
+                             `RCN Telecom Services of Philadelphia LLC` = "RCN",
+                             `RCN Telecom Services of Philadelphia, LLC` = "RCN",
+                             `Time Warner Cable Enterprises LLC` = "Time Warner",
+                             `Time Warner Cable Inc.` = "Time Warner",
+                             `Verizon California Inc.` = "Verizon",
+                             `Verizon Delaware LLC` = "Verizon",
+                             `Verizon Florida LLC` = "Verizon",
+                             `Verizon Maryland LLC` = "Verizon",
+                             `Verizon New England Inc.` = "Verizon",
+                             `Verizon New Jersey Inc.` = "Verizon",
+                             `Verizon New York Inc.` = "Verizon",
+                             `Verizon Pennsylvania Inc.` = "Verizon",
+                             `Verizon Pennsylvania LLC` = "Verizon",
+                             `Verizon Virginia Inc.` = "Verizon",
+                             `Verizon Virginia LLC` = "Verizon",
+                             `Verizon Washington, DC Inc.` = "Verizon",
+                             `Windstream Concord Telephone, Inc` = "Windstream",
+                             `Windstream Corporation` = "Windstream",
+                             `Windstream D&E, Inc.` = "Windstream",
+                             `Windstream Georgia Communications, LLC` = "Windstream",
+                             `Windstream Kentucky East, LLC` = "Windstream",
+                             `Windstream Mississippi, LLC` = "Windstream",
+                             `Windstream Missouri, Inc.` = "Windstream",
+                             `Windstream Nebraska, Inc.` = "Windstream",
+                             `Windstream North Carolina, LLC` = "Windstream",
+                             `Windstream Ohio, Inc.` = "Windstream",
+                             `Windstream Pennsylvania, LLC` = "Windstream",
+                             `Windstream South Carolina, LLC` = "Windstream",
+                             `Windstream Sugar Land, Inc` = "Windstream",
+                             `Windstream Western Reserve, Inc` = "Windstream",
+                           `AT&T Services, Inc.` = "AT&T", 
+                           `CenturyLink, Inc.` = "CenturyLink"
+         )
+urban_bb$down_value = urban_bb$`Download Bandwidth Mbps` / urban_bb$`Total Charge`
+
+agg_urban_bb = NULL
+
+for (type in unique(urban_bb$Technology)) {
+  agg_func = function(x) {
+    return(mean(as.numeric(x)))
+  }
+  
+  temp = subset(urban_bb, Technology == type) %>% subset(`Total Charge` > 0)
+  result = temp %>% .[c(4,6,7,8,9,10,11,12,13,17,18)] %>% 
+  aggregate(by = list(temp$Provider), FUN = agg_func) %>% 
+    bind_cols(tibble(counts = table(temp$Provider)))
+  result$Technology = type
+  if (is.null(agg_urban_bb)) {
+    agg_urban_bb = result
+  } else {
+    agg_urban_bb = bind_rows(agg_urban_bb, result)
+  }
+}
+
+agg_urban_bb = subset(agg_urban_bb, Technology != "Other")
+```
+
+## The Internet is pretty important
+
+## ...but it isn't spread equally
+
+```{r us-map-int, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+sum_us_int = sum(acs_17_mod$total_pop * acs_17_mod$no_inet)
+avg_us_int = 1 - (sum_us_int / sum(sum(acs_17_mod$total_pop)))
+
+states_sf %>% 
+  ggplot() + 
+  geom_sf(color = "grey90", fill = "white") +
+  coord_sf(crs = st_crs(102003)) +
+  geom_point(data = acs_17_mod, aes(x = X,
+                     y = Y,
+                     color = (1- no_inet),
+                     size = pop_dens)) + 
+  scale_color_gradientn(colors = color_pal(6, type = "cool"), labels = percent_format(accuracy = 1)) +
+  scale_size(range = c(0.5, 15), breaks = c(50, 500, 5000, 50000)) +
+  scale_alpha(range = c(1.0, 0.05)) +
+  labs(title = paste(round(avg_us_int * 100), "% of America has Internet Access", sep = ""),
+      color = "Percent with \nInternet",
+       size = "Population Density \n(ppl/sq mi)",
+      caption = "American Community Survey 2017") +
+   theme_map() +
+  theme(axis.text = element_blank())
+```
+
+## ...but it isn't spread equally
+```{r us-map-bb, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+sum_us_bb = sum(acs_17_mod$total_pop) - sum(acs_17_mod$total_pop * acs_17_mod$broadband_any)
+avg_us_bb = (sum_us_bb / sum(sum(acs_17_mod$total_pop)))
+
+states_sf %>% 
+  ggplot() + 
+  geom_sf(color = "grey30", fill = "#323232") +
+  coord_sf(crs = st_crs(102003)) +
+  geom_point(data = acs_17_mod, aes(x = X,
+                     y = Y,
+                     color = broadband_any,
+                     size = pop_dens)) + 
+  scale_color_gradientn(colors = color_pal(5, type = "warm", reverse = TRUE), labels = percent_format(accuracy = 1)) +
+  scale_size(range = c(0.5, 15), breaks = c(50, 500, 5000, 50000)) +
+  scale_alpha(range = c(1.0, 0.05)) +
+  labs(title = paste(round(avg_us_bb * 100), "% of America has Broadband Access", sep = ""),
+      color = "Percent with \nBroadband",
+       size = "Population Density \n(ppl/sq mi)",
+      caption = "American Community Survey 2017") +
+  theme_map() +
+  theme(axis.text = element_blank())
+```
+
+## This has serious implications
+
+```{r point-int-pov, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+ggplot(data = acs_17_mod, aes(x = no_inet * 100, y = below_poverty * 100)) + 
+  geom_point(aes(fill = region, color = region), alpha = 0.6, size = 2) + 
+  scale_fill_manual(values = color_pal(4)) +
+  scale_color_manual(values = color_pal(4)) +
+  labs(title = "Counties with Higher Poverty Rates Have Less Internet Access",
+       x = "Percent with no Internet", 
+       y = "Percent Below Poverty Line", 
+       caption="American Community Survey 2017", 
+       color = "Region") + 
+  scale_x_log10(breaks = c(0, 1, 2, 5, 10, 15, 20, 25)) +
+  scale_y_log10(breaks = c(0, 1, 2, 3, 4, 5)) +
+  theme_master()  +
+  theme(panel.grid.minor = element_blank())
+```
+
+## ...but there is some good news!
+
+```{r tree-map, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(agg_urban_bb, aes(area = as.numeric(counts), fill = down_value, label = Group.1, subgroup = Technology)) + 
+  geom_treemap() +
+  geom_treemap_subgroup_border() +
+  geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5, colour =
+                             "black", fontface = "italic", min.size = 0) +
+  geom_treemap_text(colour = "white", place = "centre",
+                    grow = TRUE) +
+  scale_fill_gradientn(trans = "log10", colors = color_pal(5, type = "continuous")) + 
+  labs(title = "Cable and Fiber ISPs Provide Better Value for Internet Service",
+       subtitle = "Small ISPs that use Fiber to the Home are the best value",
+       fill = "Value \n(Megabits \nper USD)", 
+       caption = "Urban Rate Broadband Survey") +
+  theme_master()
+```
+
+## ...but there is some good news!
+```{r speed-violin-plot, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+chart_labels = tibble(text = c('FCC \nBroadband \nCutoff'), x = c(0.6), y = c(25))
+ggplot(data = bind_rows(filter(urban_bb, Year == 2015), filter(urban_bb, Year == 2018)), aes(x = factor(`Year`), y = `Download Bandwidth Mbps`)) +
+  geom_violin(aes(color = ordered(Year), fill = ordered(Year))) +
+  scale_color_manual(values = color_pal(2)) +
+  scale_fill_manual(values = color_pal(2)) +
+  scale_y_continuous(trans = "log10", breaks = c(1, 5, 20, 50, 100, 300, 1000, 10000)) +
+  geom_hline(yintercept = 25, linetype = 2,  color = "black", size = 1) + 
+  geom_label(data = chart_labels[1,], aes(x = x, y = y, label = text), alpha = 0.95) + 
+  labs(title = "Download Speeds Have Increased Significantly",
+       x = "Year",
+       fill = "Year",
+       color = "Year",
+       y = "Download Speed (Mbps)",
+       caption = "Urban Rate Broadband Survey") +
+  theme_master() +
+  theme(legend.position="none") + 
+  theme(panel.grid.minor = element_blank())
+```
